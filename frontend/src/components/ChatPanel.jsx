@@ -20,7 +20,7 @@ export default function ChatPanel({ messages, onSend, selfId }) {
         {messages.map((m, i) => (
           <div key={i} className={`msg ${m.userId === selfId ? 'mine' : ''}`}>
             <div className="meta">
-              {m.userId === selfId ? 'You' : m.name} · {new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              {m.userId === selfId ? 'You' : m.name} -- {new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
             </div>
             <div>{m.text}</div>
           </div>
@@ -28,7 +28,7 @@ export default function ChatPanel({ messages, onSend, selfId }) {
         <div ref={endRef} />
       </div>
       <form className="row" onSubmit={submit}>
-        <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Message…" maxLength={2000} />
+        <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Typeee…" maxLength={2000} />
         <button>Send</button>
       </form>
     </div>

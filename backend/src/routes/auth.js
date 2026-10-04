@@ -6,7 +6,7 @@ import { signToken, requireAuth } from "../middleware/auth.js";
 const router = Router();
 
 const publicUser = (u) => ({
-  id: String(u_id),
+  id: String(u._id),
   name: u.name,
   email: u.email,
 });
@@ -35,10 +35,10 @@ router.post("/register", async (req, res) => { // route for registering
 });
 
 router.post("/login", async (req, res) => { // route for logging in
-  const { email, password } = req.body() || {};
+  const { email, password } = req.body || {};
 
   const user = email && (await User.findOne({ email: email.toLowerCase() }));
-  if (!user || !(await bcrypt.compare(password || "", user.password)))
+  if (!user || !(await bcrypt.compare(password || "", user.passwordHash)))
     return res.status(401).json({ error: "Invalid credentials" });
 
   res.json({ token: signToken(user), user: publicUser(user) });
