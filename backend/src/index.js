@@ -10,7 +10,8 @@ import { registerSocket } from './socket/main.js';
 import { startSweeper } from './rooms/store.js';
 
 const app = express();
-app.use(cors({ origin: process.env.CLIENT_URL }));
+const origins = (process.env.CLIENT_URL || '').split(',').map((s) => s.trim());
+app.use(cors({ origin: origins }));
 app.use(express.json());
 
 app.get('/api/health', (_, res) => res.json({ ok: true })); // to check if server is alive
@@ -18,7 +19,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/rooms', roomRoutes);
 
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: process.env.CLIENT_URL } });
+const io = new Server(server, { cors: { origin: origins } });
 registerSocket(io);
 startSweeper();
 
