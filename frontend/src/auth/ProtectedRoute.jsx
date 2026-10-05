@@ -1,9 +1,16 @@
-import {Navigate} from 'react-router-dom';
-import {useAuth} from './AuthContext.jsx';
+import { Navigate } from 'react-router-dom';
+import { useAuth } from './AuthContext.jsx';
 
-export default function ProtectedRoute({children}){ //prevent users from accessing pages unless they are logged in
-    const {user,loading} = useAuth();
+export default function ProtectedRoute({ children }) {
+  const { user, loading } = useAuth();
 
-    if(loading) return <p className="center">Loading...</p>;
-    return user? children: <Navigate to ="/login" replace/>;
+  if (loading) {
+    return <p className="center">Loading...</p>;
+  }
+
+  if (!user) {
+    return <Navigate to="/login" replace />;
+  }
+
+  return children;
 }
