@@ -34,6 +34,8 @@ Built for the GDGxIris Recruitments 2026 standalone task.
 6. **Disconnects:** when a socket disconnects, the server notifies the room and clients close that peer's connection and remove its tile.
 
 > Mesh topology works well for small rooms (roughly 2–4 people). Larger rooms would need an SFU.
+>
+> Video Demonstration: <https://drive.google.com/file/d/14Soty_Gt1dZjOEhnDpBHSydknYC13nsd/view?usp=sharing>
 
 ## Project Structure
 
