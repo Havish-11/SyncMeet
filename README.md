@@ -66,7 +66,7 @@ Adjust folder names to match your repo if they differ.
 ### 1. Clone
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/Havish-11/SyncMeet
 cd syncmeet
 ```
 
