@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { createPeerConnection, toDesc } from '../lib/rtc.js';
+import { createOfferPeer, createAnswerPeer, acceptOffer, toDesc } from '../lib/rtc.js';
 
 // Mesh WebRTC. The NEWCOMER sends offers to everyone already in the room; existing peers only answer.
-// That rule means two peers never offer to each other at the same time.
+// That rule means two peers never offer to each other at the same time (no glare).
 export function useWebRTC({ socket, active, joinEpoch, initialPeersRef, localStream }) {
   const peers = useRef(new Map()); // userId -> { pc, videoSender, pendingIce }
   const localRef = useRef(localStream);
@@ -11,8 +11,9 @@ export function useWebRTC({ socket, active, joinEpoch, initialPeersRef, localStr
   const [remoteStreams, setRemoteStreams] = useState({}); // userId -> MediaStream
   const [screenStream, setScreenStream] = useState(null);
 
+  const audioTrack = () => localRef.current?.getAudioTracks()[0] ?? null;
   const cameraTrack = () => localRef.current?.getVideoTracks()[0] ?? null;
-  const outgoingVideo = () => screenRef.current?.getVideoTracks()[0] ?? cameraTrack();
+  const outgoingVideo = () => screenRef.current?.getVideoTracks()[0] ?? cameraTrack(); // screen if sharing
 
   const closePeer = useCallback((userId) => {
     const entry = peers.current.get(userId);
@@ -27,15 +28,12 @@ export function useWebRTC({ socket, active, joinEpoch, initialPeersRef, localStr
     for (const id of [...peers.current.keys()]) closePeer(id);
   }, [closePeer]);
 
-  const createPeer = useCallback((userId) => {
+  // Store a new peer connection (replacing any old one for that user) and hook up its events.
+  const register = useCallback((userId, pc, videoSender = null) => {
     closePeer(userId); // always start fresh (peer refreshed / rejoined)
-    const { pc, audioSender, videoSender } = createPeerConnection();
-    const remote = new MediaStream(); 
+    const remote = new MediaStream(); // our own stable stream per peer (don't rely on msid)
     const entry = { pc, videoSender, pendingIce: [] };
     peers.current.set(userId, entry);
-
-    audioSender.replaceTrack(localRef.current?.getAudioTracks()[0] ?? null).catch(() => {});
-    videoSender.replaceTrack(outgoingVideo()).catch(() => {}); // screen if currently sharing, else camera
 
     pc.ontrack = (e) => {
       if (!remote.getTracks().includes(e.track)) remote.addTrack(e.track);
@@ -51,24 +49,28 @@ export function useWebRTC({ socket, active, joinEpoch, initialPeersRef, localStr
     for (const c of entry.pendingIce.splice(0)) await entry.pc.addIceCandidate(c).catch(() => {});
   };
 
+  // Newcomer -> existing peer
   const offerTo = useCallback(async (userId) => {
-    const entry = createPeer(userId);
+    const { pc, videoSender } = createOfferPeer({ audioTrack: audioTrack(), videoTrack: outgoingVideo() });
+    register(userId, pc, videoSender);
     try {
-      await entry.pc.setLocalDescription(await entry.pc.createOffer());
-      socket.emit('offer', { to: userId, data: toDesc(entry.pc.localDescription) });
+      await pc.setLocalDescription(await pc.createOffer());
+      socket.emit('offer', { to: userId, data: toDesc(pc.localDescription) });
     } catch (err) { console.error('offer failed', err); }
-  }, [socket, createPeer]);
+  }, [socket, register]);
 
   // Signaling listeners. Registered in the same commit as useRoomSocket's effect, i.e. before any
   // network event can arrive.
   useEffect(() => {
     const onOffer = async ({ from, data }) => {
-      const entry = createPeer(from);
+      const pc = createAnswerPeer();
+      const entry = register(from, pc);
       try {
-        await entry.pc.setRemoteDescription(data);
+        // attaches our tracks to the transceivers the offer created, THEN we answer (see rtc.js)
+        entry.videoSender = await acceptOffer(pc, data, { audioTrack: audioTrack(), videoTrack: outgoingVideo() });
         await flushIce(entry);
-        await entry.pc.setLocalDescription(await entry.pc.createAnswer());
-        socket.emit('answer', { to: from, data: toDesc(entry.pc.localDescription) });
+        await pc.setLocalDescription(await pc.createAnswer());
+        socket.emit('answer', { to: from, data: toDesc(pc.localDescription) });
       } catch (err) { console.error('offer handling failed', err); }
     };
     const onAnswer = async ({ from, data }) => {
@@ -96,7 +98,7 @@ export function useWebRTC({ socket, active, joinEpoch, initialPeersRef, localStr
       socket.off('user-left', onLeft);
       closeAll();
     };
-  }, [socket, createPeer, closePeer, closeAll]);
+  }, [socket, register, closePeer, closeAll]);
 
   // (Re)join: tear everything down and offer to whoever was in the room at join time.
   useEffect(() => {
@@ -107,7 +109,7 @@ export function useWebRTC({ socket, active, joinEpoch, initialPeersRef, localStr
 
   // ---- screen sharing: swap the video sender's track, no renegotiation
   const replaceVideo = useCallback(
-    (track) => Promise.all([...peers.current.values()].map((e) => e.videoSender.replaceTrack(track).catch(() => {}))),
+    (track) => Promise.all([...peers.current.values()].map((e) => e.videoSender?.replaceTrack(track).catch(() => {}))),
     []
   );
 
