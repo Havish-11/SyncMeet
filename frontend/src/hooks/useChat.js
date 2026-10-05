@@ -1,3 +1,5 @@
+// Custom react hook for managing room chats
+
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 // Messages only live while you're in the room (the server doesn't store history).
