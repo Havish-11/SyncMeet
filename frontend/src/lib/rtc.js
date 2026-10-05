@@ -1,27 +1,24 @@
-const turnUrl = import.meta.env.VITE_TURN_URL;
+// STUN finds your public address. TURN relays media when a direct connection is impossible
+// (different networks, mobile data, strict NATs). Without TURN, calls across networks often stay black.
+const iceServers = [
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+];
 
-export const RTC_CONFIG = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    ...(turnUrl
-      ? [{
-          urls: turnUrl,
-          username: import.meta.env.VITE_TURN_USERNAME,
-          credential: import.meta.env.VITE_TURN_CREDENTIAL,
-        }]
-      : []),
-  ],
-};
-
-export function createPeerConnection() {
-  return new RTCPeerConnection(RTC_CONFIG);
+if (import.meta.env.VITE_TURN_URL) {
+  iceServers.push({
+    urls: import.meta.env.VITE_TURN_URL.split(','), // comma-separated list is fine
+    username: import.meta.env.VITE_TURN_USERNAME,
+    credential: import.meta.env.VITE_TURN_CREDENTIAL,
+  });
 }
 
-export function descriptionForSocket(description) {
-  return {
-    type: description.type,
-    sdp: description.sdp,
-  };
+export function createPeerConnection() {
+  return new RTCPeerConnection({ iceServers });
+}
+
+// Send only plain {type, sdp} over the socket.
+export function descriptionForSocket({ type, sdp }) {
+  return { type, sdp };
 }
 
 export function getGridColumns(numberOfPeople) {

@@ -29,7 +29,7 @@ function RoomInner({ roomId }) {
   const [panel, setPanel] = useState(null); // null | 'chat' | 'people'
   const chat = useChat(socket, { open: panel === 'chat', selfId: user.id });
 
-  useEffect(() => () => release(), []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => release(), []); 
 
   if (MESSAGES[status]) {
     return (

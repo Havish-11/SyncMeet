@@ -1,266 +1,196 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPeerConnection, descriptionForSocket } from '../lib/rtc.js';
 
-// Each participant has one RTCPeerConnection.
+// One RTCPeerConnection per other person in the room.
+// Rule: whoever JOINS calls everyone already inside. Everyone else only answers.
 export function useWebRTC({ socket, active, joinNumber, initialPeersRef, localStream }) {
-  const connections = useRef(new Map());
-  const localStreamRef = useRef(localStream);
+  const peers = useRef(new Map()); // userId -> { pc, isCaller, videoSender, pendingIce }
   const screenRef = useRef(null);
+  const localRef = useRef(localStream);
+  localRef.current = localStream;
 
   const [remoteStreams, setRemoteStreams] = useState({});
   const [screenStream, setScreenStream] = useState(null);
 
-  localStreamRef.current = localStream;
+  const audioTrack = () => localRef.current?.getAudioTracks()[0] || null;
+  const cameraTrack = () => localRef.current?.getVideoTracks()[0] || null;
+  const videoTrack = () => screenRef.current?.getVideoTracks()[0] || cameraTrack();
 
-  function getAudioTrack() {
-    return localStreamRef.current?.getAudioTracks()[0] || null;
-  }
+  // ---------- create / close ----------
 
-  function getVideoTrack() {
-    if (screenRef.current) {
-      return screenRef.current.getVideoTracks()[0] || null;
-    }
-
-    return localStreamRef.current?.getVideoTracks()[0] || null;
-  }
-
-  function closeConnection(userId) {
-    const connection = connections.current.get(userId);
-    if (!connection) return;
-
-    connection.pc.close();
-    connections.current.delete(userId);
-
-    setRemoteStreams((oldStreams) => {
-      const newStreams = { ...oldStreams };
-      delete newStreams[userId];
-      return newStreams;
+  function closePeer(userId) {
+    const peer = peers.current.get(userId);
+    if (!peer) return;
+    peers.current.delete(userId);
+    peer.pc.close();
+    setRemoteStreams((old) => {
+      const next = { ...old };
+      delete next[userId];
+      return next;
     });
   }
 
-  function closeAllConnections() {
-    for (const userId of connections.current.keys()) {
-      closeConnection(userId);
-    }
+  function closeAllPeers() {
+    for (const userId of [...peers.current.keys()]) closePeer(userId);
   }
 
-  function setupConnection(userId, pc) {
-    closeConnection(userId);
+  function createPeer(userId, isCaller) {
+    closePeer(userId);
 
-    const remoteStream = new MediaStream();
-
-    connections.current.set(userId, {
-      pc,
-      remoteStream,
-      videoSender: null,
-      pendingIce: [],
-    });
+    const pc = createPeerConnection();
+    const peer = { pc, isCaller, videoSender: null, pendingIce: [] };
+    peers.current.set(userId, peer);
 
     pc.ontrack = (event) => {
-      remoteStream.addTrack(event.track);
-
-      setRemoteStreams((oldStreams) => ({
-        ...oldStreams,
-        [userId]: remoteStream,
+      if (peers.current.get(userId)?.pc !== pc) return; // connection was replaced
+      // Make a NEW stream each time a track arrives so <video> always picks it up.
+      setRemoteStreams((old) => ({
+        ...old,
+        [userId]: new MediaStream([...(old[userId]?.getTracks() ?? []), event.track]),
       }));
     };
 
     pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        socket.emit('ice-candidate', {
-          to: userId,
-          data: event.candidate.toJSON(),
-        });
+      if (event.candidate) socket.emit('ice-candidate', { to: userId, data: event.candidate.toJSON() });
+    };
+
+    // If the link dies, the caller simply dials again.
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'failed' && isCaller && peers.current.get(userId)?.pc === pc) {
+        callUser(userId);
       }
     };
 
-    return connections.current.get(userId);
+    return peer;
   }
 
-  async function addQueuedIce(connection) {
-    for (const candidate of connection.pendingIce) {
-      try {
-        await connection.pc.addIceCandidate(candidate);
-      } catch {
-        // Ignore old/invalid ICE candidates.
+  // ---------- media ----------
+
+  // Put our mic/camera (or screen) on every audio/video slot, so we can send AND receive.
+  async function attachLocalMedia(peer) {
+    for (const t of peer.pc.getTransceivers()) {
+      t.direction = 'sendrecv';
+      if (t.receiver.track.kind === 'audio') {
+        await t.sender.replaceTrack(audioTrack());
+      } else {
+        peer.videoSender = t.sender;
+        await t.sender.replaceTrack(videoTrack());
       }
     }
-
-    connection.pendingIce = [];
   }
+
+  async function setRemote(peer, description) {
+    await peer.pc.setRemoteDescription(description);
+    // ICE candidates that arrived too early can be added now.
+    for (const candidate of peer.pendingIce) peer.pc.addIceCandidate(candidate).catch(() => {});
+    peer.pendingIce = [];
+  }
+
+  // ---------- calling and answering ----------
 
   async function callUser(userId) {
-    const pc = createPeerConnection();
-
-    // Create audio/video channels even when one device is unavailable.
-    // This lets the other person send media back to us.
-    const audio = pc.addTransceiver('audio', { direction: 'sendrecv' });
-    const video = pc.addTransceiver('video', { direction: 'sendrecv' });
-
-    await audio.sender.replaceTrack(getAudioTrack());
-    await video.sender.replaceTrack(getVideoTrack());
-
-    const connection = setupConnection(userId, pc);
-    connection.videoSender = video.sender;
-
+    const peer = createPeer(userId, true);
     try {
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
+      peer.pc.addTransceiver('audio');
+      peer.pc.addTransceiver('video');
+      await attachLocalMedia(peer);
 
-      socket.emit('offer', {
-        to: userId,
-        data: descriptionForSocket(pc.localDescription),
-      });
+      await peer.pc.setLocalDescription(await peer.pc.createOffer());
+      socket.emit('offer', { to: userId, data: descriptionForSocket(peer.pc.localDescription) });
     } catch (error) {
-      console.error('Could not create offer', error);
+      console.error('Could not call', userId, error);
     }
   }
-
-  useEffect(() => {
-    function receiveOffer({ from, data }) {
-      answerUser(from, data);
-    }
-
-    function receiveAnswer({ from, data }) {
-      const connection = connections.current.get(from);
-      if (!connection) return;
-
-      connection.pc
-        .setRemoteDescription(data)
-        .then(() => addQueuedIce(connection))
-        .catch((error) => console.error('Could not set answer', error));
-    }
-
-    function receiveIce({ from, data }) {
-      const connection = connections.current.get(from);
-      if (!connection) return;
-
-      if (connection.pc.remoteDescription) {
-        connection.pc.addIceCandidate(data).catch(() => {});
-      } else {
-        connection.pendingIce.push(data);
-      }
-    }
-
-    function userLeft({ userId }) {
-      closeConnection(userId);
-    }
-
-    socket.on('offer', receiveOffer);
-    socket.on('answer', receiveAnswer);
-    socket.on('ice-candidate', receiveIce);
-    socket.on('user-left', userLeft);
-
-    return () => {
-      socket.off('offer', receiveOffer);
-      socket.off('answer', receiveAnswer);
-      socket.off('ice-candidate', receiveIce);
-      socket.off('user-left', userLeft);
-    };
-  }, [socket]);
 
   async function answerUser(userId, offer) {
-    const pc = createPeerConnection();
-    const connection = setupConnection(userId, pc);
-
+    const peer = createPeer(userId, false);
     try {
-      await pc.setRemoteDescription(offer);
+      await setRemote(peer, offer);
+      await attachLocalMedia(peer);
 
-      // The offer created the tracks/transceivers on this side.
-      for (const transceiver of pc.getTransceivers()) {
-        const track = transceiver.receiver.track;
-
-        transceiver.direction = 'sendrecv';
-
-        if (track.kind === 'audio') {
-          await transceiver.sender.replaceTrack(getAudioTrack());
-        }
-
-        if (track.kind === 'video') {
-          connection.videoSender = transceiver.sender;
-          await transceiver.sender.replaceTrack(getVideoTrack());
-        }
-      }
-
-      await addQueuedIce(connection);
-
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-
-      socket.emit('answer', {
-        to: userId,
-        data: descriptionForSocket(pc.localDescription),
-      });
+      await peer.pc.setLocalDescription(await peer.pc.createAnswer());
+      socket.emit('answer', { to: userId, data: descriptionForSocket(peer.pc.localDescription) });
     } catch (error) {
-      console.error('Could not answer offer', error);
+      console.error('Could not answer', userId, error);
     }
   }
 
+  // ---------- socket messages ----------
+
   useEffect(() => {
-    closeAllConnections();
+    const onOffer = ({ from, data }) => answerUser(from, data);
 
+    const onAnswer = ({ from, data }) => {
+      const peer = peers.current.get(from);
+      if (peer) setRemote(peer, data).catch((e) => console.error('Bad answer', e));
+    };
+
+    const onIce = ({ from, data }) => {
+      const peer = peers.current.get(from);
+      if (!peer) return;
+      if (peer.pc.remoteDescription) peer.pc.addIceCandidate(data).catch(() => {});
+      else peer.pendingIce.push(data);
+    };
+
+    const onUserLeft = ({ userId }) => closePeer(userId);
+
+    socket.on('offer', onOffer);
+    socket.on('answer', onAnswer);
+    socket.on('ice-candidate', onIce);
+    socket.on('user-left', onUserLeft);
+    return () => {
+      socket.off('offer', onOffer);
+      socket.off('answer', onAnswer);
+      socket.off('ice-candidate', onIce);
+      socket.off('user-left', onUserLeft);
+    };
+  }, [socket]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Every (re)join: start fresh and call the people who were already in the room.
+  useEffect(() => {
+    closeAllPeers();
     if (!active) return;
+    for (const peer of initialPeersRef.current) callUser(peer.userId);
+  }, [active, joinNumber]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    for (const peer of initialPeersRef.current) {
-      callUser(peer.userId);
-    }
-  }, [active, joinNumber]);
+  // Leaving the room.
+  useEffect(() => () => {
+    closeAllPeers();
+    screenRef.current?.getTracks().forEach((t) => t.stop());
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function replaceVideoTrack(track) {
-    for (const connection of connections.current.values()) {
-      if (connection.videoSender) {
-        try {
-          await connection.videoSender.replaceTrack(track);
-        } catch {
-          // Ignore a connection that has already closed.
-        }
-      }
+  // ---------- screen sharing ----------
+
+  async function sendVideo(track) {
+    for (const peer of peers.current.values()) {
+      await peer.videoSender?.replaceTrack(track).catch(() => {});
     }
   }
 
   async function startShare() {
     if (screenRef.current) return;
-
     try {
       const screen = await navigator.mediaDevices.getDisplayMedia({ video: true });
-      const track = screen.getVideoTracks()[0];
-
       screenRef.current = screen;
       setScreenStream(screen);
+      screen.getVideoTracks()[0].onended = stopShare; // browser "Stop sharing" button
 
-      track.onended = stopShare;
-
-      await replaceVideoTrack(track);
+      await sendVideo(screen.getVideoTracks()[0]);
       socket.emit('media-state', { sharing: true });
     } catch {
-      // The user cancelled screen selection.
+      // User cancelled the screen picker.
     }
   }
 
   async function stopShare() {
-    const screen = screenRef.current;
-    if (!screen) return;
-
-    screen.getTracks().forEach((track) => track.stop());
+    if (!screenRef.current) return;
+    screenRef.current.getTracks().forEach((t) => t.stop());
     screenRef.current = null;
     setScreenStream(null);
 
-    await replaceVideoTrack(localStreamRef.current?.getVideoTracks()[0] || null);
+    await sendVideo(cameraTrack());
     socket.emit('media-state', { sharing: false });
   }
 
-  useEffect(() => {
-    return () => {
-      closeAllConnections();
-      screenRef.current?.getTracks().forEach((track) => track.stop());
-    };
-  }, []);
-
-  return {
-    remoteStreams,
-    screenStream,
-    sharing: !!screenStream,
-    startShare,
-    stopShare,
-  };
+  return { remoteStreams, screenStream, sharing: !!screenStream, startShare, stopShare };
 }
