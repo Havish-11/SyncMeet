@@ -1,3 +1,12 @@
+// To manage the user's camera + microphone, keep the media stream available to different components, and provide functions like:
+
+// Start camera/mic
+// Turn mic on/off
+// Turn camera on/off
+// Release camera/mic when leaving
+// Tell components whether camera/mic are available
+// Share all this information with components through React Context
+
 import { createContext, useCallback, useContext, useRef, useState } from 'react';
 
 const MediaCtx = createContext(null);
