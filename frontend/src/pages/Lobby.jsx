@@ -16,7 +16,7 @@ export default function Lobby() {
     start();
     api(`/api/rooms/${roomId}`).catch((e) => setRoomError(e.message));
     return () => { if (!joining.current) release(); }; // leaving without joining: turn the camera off
-  }, [roomId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [roomId]); 
 
   useEffect(() => {
     if (videoRef.current) videoRef.current.srcObject = stream;

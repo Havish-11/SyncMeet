@@ -31,7 +31,7 @@ export default function Dashboard() {
   return (
     <div className="card">
       <div className="row">
-        <h1>Hi, {user.name}</h1>
+        <h1>HELLO, {user.name.toUpperCase()}</h1>
         <button className="ghost" onClick={logout}>Log out</button>
       </div>
       <button onClick={create}>New meeting</button>
