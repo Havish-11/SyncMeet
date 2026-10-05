@@ -1,125 +1,183 @@
-import { verifyToken } from "../middleware/auth.js";
+import { getUserFromToken } from '../middleware/auth.js';
 import {
   getRoom,
   addParticipant,
   removeParticipant,
-  listPeers,
-  toPublic,
-} from "../rooms/store.js";
+  getOtherParticipants,
+  publicParticipant,
+} from '../rooms/store.js';
 
 export function registerSocket(io) {
+  // Check the JWT before allowing a socket connection.
   io.use((socket, next) => {
     try {
-      socket.user = verifyToken(socket.handshake.auth?.token);
+      const token = socket.handshake.auth?.token;
+      socket.user = getUserFromToken(token);
       next();
     } catch {
-      next(new Error("unauthorized"));
+      next(new Error('unauthorized'));
     }
   });
 
-  io.on("connection", (socket) => {
-    const me = socket.user;
+  io.on('connection', (socket) => {
+    const user = socket.user;
 
-    const leave = (reason) => {
-      // leaving the meet
+    function leaveRoom(reason) {
       const roomId = socket.roomId;
-
       if (!roomId) return;
+
+      const room = getRoom(roomId);
       socket.roomId = null;
       socket.leave(roomId);
 
-      const room = getRoom(roomId);
-      const q = room?.participants.get(me.id);
-      if (!q || q.socketId !== socket.id) return;
-      const { newHostId } = removeParticipant(room, me.id);
-      io.to(roomId).emit("user-left", { userId: me.id, reason });
-      if (newHostId) io.to(roomId).emit("host-changed", { hostId: newHostId });
-    };
+      if (!room) return;
 
-    socket.on("join-room", ({ roomId, mic = true, cam = true } = {}, ack) => {
-      const room = getRoom(roomId);
-      if (!room) return ack?.({ error: "Room not found" });
-      if (socket.roomId) leave("switched");
+      const participant = room.participants.get(user.id);
 
-      // Same user already in room (refresh / second tab): evict the old socket
-      const existing = room.participants.get(me.id);
-      if (existing) {
-        const old = io.sockets.sockets.get(existing.socketId);
-        if (old) {
-          old.roomId = null;
-          old.leave(roomId);
-          old.emit("replaced");
-        }
-        io.to(roomId).emit("user-left", { userId: me.id, reason: "rejoined" });
+      // Ignore an old socket that was already replaced.
+      if (!participant || participant.socketId !== socket.id) return;
+
+      const newHostId = removeParticipant(room, user.id);
+
+      io.to(roomId).emit('user-left', {
+        userId: user.id,
+        reason,
+      });
+
+      if (newHostId) {
+        io.to(roomId).emit('host-changed', { hostId: newHostId });
+      }
+    }
+
+    socket.on('join-room', ({ roomId, mic = true, cam = true } = {}, reply) => {
+      const room = getRoom(roomId);
+
+      if (!room) {
+        reply?.({ error: 'Room not found' });
+        return;
       }
 
-      const peers = listPeers(room, me.id);
-      const self = addParticipant(room, {
-        userId: me.id,
-        name: me.name,
+      if (socket.roomId) {
+        leaveRoom('switched');
+      }
+
+      // If this user is already connected, close the old connection.
+      const oldParticipant = room.participants.get(user.id);
+
+      if (oldParticipant) {
+        const oldSocket = io.sockets.sockets.get(oldParticipant.socketId);
+
+        if (oldSocket) {
+          oldSocket.roomId = null;
+          oldSocket.leave(roomId);
+          oldSocket.emit('replaced');
+        }
+
+        room.participants.delete(user.id);
+        io.to(roomId).emit('user-left', {
+          userId: user.id,
+          reason: 'rejoined',
+        });
+      }
+
+      // Get the people already in the room.
+      const oldParticipants = getOtherParticipants(room, user.id);
+
+      const participant = addParticipant(room, {
+        userId: user.id,
+        name: user.name,
         socketId: socket.id,
         mic,
         cam,
       });
+
       socket.join(roomId);
       socket.roomId = roomId;
-      socket.to(roomId).emit("user-joined", toPublic(self));
-      ack?.({ ok: true, hostId: room.hostId, peers });
+
+      // Tell existing users that a new user joined.
+      socket.to(roomId).emit('user-joined', publicParticipant(participant));
+
+      reply?.({
+        ok: true,
+        hostId: room.hostId,
+        peers: oldParticipants,
+      });
     });
 
-    for (const event of ["offer", "answer", "ice-candidate"]) {
-      socket.on(event, ({ to, data } = {}) => {
-        const room = getRoom(socket.roomId);
-        const target = room?.participants.get(to);
-        if (!target) return;
-        io.to(target.socketId).emit(event, { from: me.id, data });
+    // WebRTC messages are simply forwarded to the correct user.
+    socket.on('offer', ({ to, data }) => sendToUser('offer', to, data));
+    socket.on('answer', ({ to, data }) => sendToUser('answer', to, data));
+    socket.on('ice-candidate', ({ to, data }) => sendToUser('ice-candidate', to, data));
+
+    function sendToUser(eventName, userId, data) {
+      const room = getRoom(socket.roomId);
+      const target = room?.participants.get(userId);
+
+      if (!target) return;
+
+      io.to(target.socketId).emit(eventName, {
+        from: user.id,
+        data,
       });
     }
 
-    socket.on("media-state", ({ mic, cam, sharing } = {}) => {
+    socket.on('media-state', (changes = {}) => {
       const room = getRoom(socket.roomId);
-      const q = room?.participants.get(me.id);
-      if (!q) return;
-      if (typeof mic === "boolean") q.mic = mic;
-      if (typeof cam === "boolean") q.cam = cam;
-      if (typeof sharing === "boolean") q.sharing = sharing;
-      socket
-        .to(socket.roomId)
-        .emit("media-state", {
-          userId: me.id,
-          mic: q.mic,
-          cam: q.cam,
-          sharing: q.sharing,
-        });
+      const participant = room?.participants.get(user.id);
+
+      if (!participant) return;
+
+      if (typeof changes.mic === 'boolean') participant.mic = changes.mic;
+      if (typeof changes.cam === 'boolean') participant.cam = changes.cam;
+      if (typeof changes.sharing === 'boolean') participant.sharing = changes.sharing;
+
+      socket.to(socket.roomId).emit('media-state', {
+        userId: user.id,
+        mic: participant.mic,
+        cam: participant.cam,
+        sharing: participant.sharing,
+      });
     });
 
-    socket.on("chat-message", ({ text } = {}) => {
-      const clean = typeof text === "string" ? text.trim().slice(0, 2000) : "";
-      if (!clean || !getRoom(socket.roomId)?.participants.has(me.id)) return;
-      io.to(socket.roomId).emit("chat-message", {
-        userId: me.id,
-        name: me.name,
-        text: clean,
+    socket.on('chat-message', ({ text } = {}) => {
+      const room = getRoom(socket.roomId);
+      if (!room?.participants.has(user.id)) return;
+
+      const cleanText = typeof text === 'string' ? text.trim().slice(0, 2000) : '';
+      if (!cleanText) return;
+
+      io.to(socket.roomId).emit('chat-message', {
+        userId: user.id,
+        name: user.name,
+        text: cleanText,
         timestamp: Date.now(),
       });
     });
 
-    socket.on("kick", ({ userId } = {}) => {
+    socket.on('kick', ({ userId } = {}) => {
       const room = getRoom(socket.roomId);
-      if (!room || room.hostId !== me.id || userId === me.id) return;
+
+      if (!room || room.hostId !== user.id || userId === user.id) return;
+
       const target = room.participants.get(userId);
       if (!target) return;
-      io.to(target.socketId).emit("kicked");
-      const t = io.sockets.sockets.get(target.socketId);
-      if (t) {
-        t.roomId = null;
-        t.leave(room.id);
+
+      io.to(target.socketId).emit('kicked');
+
+      const targetSocket = io.sockets.sockets.get(target.socketId);
+      if (targetSocket) {
+        targetSocket.roomId = null;
+        targetSocket.leave(room.id);
       }
+
       removeParticipant(room, userId);
-      io.to(room.id).emit("user-left", { userId, reason: "kicked" });
+      io.to(room.id).emit('user-left', {
+        userId,
+        reason: 'kicked',
+      });
     });
 
-    socket.on('leave-room', () => leave('left'));
-    socket.on('disconnect', () => leave('disconnected'));
+    socket.on('leave-room', () => leaveRoom('left'));
+    socket.on('disconnect', () => leaveRoom('disconnected'));
   });
 }
