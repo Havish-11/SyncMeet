@@ -1,3 +1,5 @@
+//Manages actual room connection and membership
+
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createSocket } from '../socket.js';
 

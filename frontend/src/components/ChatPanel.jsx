@@ -2,33 +2,58 @@ import { useEffect, useRef, useState } from 'react';
 
 export default function ChatPanel({ messages, onSend, selfId }) {
   const [text, setText] = useState('');
-  const endRef = useRef(null);
+  const bottomRef = useRef(null);
 
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
-  const submit = (e) => {
-    e.preventDefault();
+  function submit(event) {
+    event.preventDefault();
+
+    if (!text.trim()) return;
+
     onSend(text);
     setText('');
-  };
+  }
 
   return (
     <div className="panel chat">
       <h3>Chat</h3>
+
       <div className="chat-list">
-        {messages.length === 0 && <p className="muted">No messages yet.</p>}
-        {messages.map((m, i) => (
-          <div key={i} className={`msg ${m.userId === selfId ? 'mine' : ''}`}>
+        {messages.length === 0 && (
+          <p className="muted">No messages yet.</p>
+        )}
+
+        {messages.map((message, index) => (
+          <div
+            key={index}
+            className={`msg ${message.userId === selfId ? 'mine' : ''}`}
+          >
             <div className="meta">
-              {m.userId === selfId ? 'You' : m.name} -- {new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              {message.userId === selfId ? 'You' : message.name}
+              {' - '}
+              {new Date(message.timestamp).toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit',
+              })}
             </div>
-            <div>{m.text}</div>
+
+            <div>{message.text}</div>
           </div>
         ))}
-        <div ref={endRef} />
+
+        <div ref={bottomRef} />
       </div>
+
       <form className="row" onSubmit={submit}>
-        <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Typeee…" maxLength={2000} />
+        <input
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+          placeholder="Type a message..."
+          maxLength={2000}
+        />
         <button>Send</button>
       </form>
     </div>
