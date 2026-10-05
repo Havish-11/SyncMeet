@@ -1,59 +1,90 @@
-import {randomUUID} from 'crypto';
+import { randomUUID } from 'crypto';
 
-const rooms = new Map(); // main storage of all rooms. roomId -> { id, hostId, participants: Map<userId, p>, emptySince }
-const EMPTY_TTL_MS = 4*60*1000; // empty room timeout
+// Rooms only live in memory. MongoDB is used for USER accounts.
+const ROOMS = new Map();
+const EMPTY_ROOM_TIME = 5 * 60 * 1000;
 
-export function createRoom(hostId) { //hostId is the userId of the person who is the host of this room
-    const id = randomUUID().slice(0,8);
+export function createRoom(hostId) {
+  const room = {
+    id: randomUUID().slice(0, 8),
+    hostId,
+    participants: new Map(),
+    emptySince: Date.now(),
+  };
 
-    rooms.set(id,{
-        id,
-        hostId,
-        participants: new Map(), emptySince: Date.now()
-    });
-
-    return rooms.get(id);
+  ROOMS.set(room.id, room);
+  return room;
 }
 
-export const getRoom = (id) => rooms.get(id); // searches for a room
-
-export function addParticipant(room, {
-    userId,
-    name,
-    socketId,
-    mic,
-    cam
-}){ // add a new participant
-    const p = { userId, name, socketId, mic, cam, sharing: false};
-    room.participants.set(userId,p);
-    room.emptySince=null;
-    return p;
+export function getRoom(roomId) {
+  return ROOMS.get(roomId);
 }
 
-export function removeParticipant(room,userId) {
-    room.participants.delete(userId);
-    let newHostId = null;
+export function addParticipant(room, USER) {
+  const participant = {
+    userId: USER.userId,
+    name: USER.name,
+    socketId: USER.socketId,
+    mic: USER.mic,
+    cam: USER.cam,
+    sharing: false,
+  };
 
-    if(room.participants.size===0) {
-        room.emptySince = Date.now();
-    }else if (room.hostId===userId) {
-        newHostId = room.participants.keys().next().value; // longest present participant
-        room.hostId= newHostId;
+  room.participants.set(USER.userId, participant);
+  room.emptySince = null;
+  return participant;
+}
+
+export function removeParticipant(room, userId) {
+  room.participants.delete(userId);
+
+  let newHostId = null;
+
+  if (room.participants.size === 0) {
+    room.emptySince = Date.now();
+  } else if (room.hostId === userId) {
+    // Give host to the first remaining participant.
+    newHostId = room.participants.keys().next().value;
+    room.hostId = newHostId;
+  }
+
+  return newHostId;
+}
+
+export function publicParticipant(participant) {
+  return {
+    userId: participant.userId,
+    name: participant.name,
+    mic: participant.mic,
+    cam: participant.cam,
+    sharing: participant.sharing,
+  };
+}
+
+export function getOtherParticipants(room, myUserId) {
+  const result = [];
+
+  for (const participant of room.participants.values()) {
+    if (participant.userId !== myUserId) {
+      result.push(publicParticipant(participant));
     }
+  }
 
-    return { newHostId };
+  return result;
 }
 
-
-export const toPublic = ({ userId, name, mic, cam, sharing }) => ({ userId, name, mic, cam, sharing });
-
-export const listPeers = (room, exceptUserId) =>
-  [...room.participants.values()].filter((p) => p.userId !== exceptUserId).map(toPublic);
-
-export function startSweeper() { // automatically deletes old rooms
+// Delete ROOMS that have been empty for too long.
+export function startRoomCleanup() {
   setInterval(() => {
     const now = Date.now();
-    for (const [id, r] of rooms)
-      if (r.participants.size === 0 && now - r.emptySince > EMPTY_TTL_MS) rooms.delete(id);
-  }, 30_000).unref(); //unref to shut it down
+
+    for (const [roomId, room] of ROOMS) {
+      if (
+        room.participants.size === 0 &&
+        now - room.emptySince > EMPTY_ROOM_TIME
+      ) {
+        ROOMS.delete(roomId);
+      }
+    }
+  }, 30_000).unref();
 }
