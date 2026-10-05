@@ -35,7 +35,8 @@ Built for the GDGxIris Recruitments 2026 standalone task.
 
 > Mesh topology works well for small rooms (roughly 2–4 people). Larger rooms would need an SFU.
 >
-> Video Demonstration: <https://drive.google.com/file/d/14Soty_Gt1dZjOEhnDpBHSydknYC13nsd/view?usp=sharing>
+
+ ### Video Demonstration: <https://drive.google.com/file/d/14Soty_Gt1dZjOEhnDpBHSydknYC13nsd/view?usp=sharing>
 
 ## Project Structure
 
